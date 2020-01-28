@@ -1,0 +1,21 @@
+authorName: chicm
+experimentName: search_backbone
+trialConcurrency: 1
+maxExecDuration: 100h
+maxTrialNum: 100
+#choice: local, remote, pai
+trainingServicePlatform: local
+searchSpacePath: search_space.json
+#choice: true, false
+useAnnotation: false
+tuner:
+  #choice: TPE, Random, Anneal, Evolution, BatchTuner, MetisTuner
+  #SMAC (SMAC should be installed through nnictl)
+  builtinTunerName: GridSearch
+  #classArgs:
+    #choice: maximize, minimize
+    #optimize_mode: maximize
+trial:
+  command: python3 search.py
+  codeDir: .
+  gpuNum: 4
