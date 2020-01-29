@@ -166,17 +166,25 @@ class BengaliNet(nn.Module):
             self.backbone = EfficientNet.from_pretrained(self.backbone_name)
             self.fc = nn.Linear(self.backbone._fc.in_features, self.num_classes)
         elif self.backbone_name in net.__dict__:
-            self.backbone = net.__dict__[self.backbone_name](pretrained=True)
+            if self.backbone_name.startswith('shuffle'):
+                self.backbone = net.__dict__[self.backbone_name]()
+            else:
+                self.backbone = net.__dict__[self.backbone_name](pretrained=True)
 
-            if self.backbone_name.startswith('densenet') or self.backbone_name.startswith('squeeze'):
+            if self.backbone_name.startswith('densenet'):
                 in_features = self.backbone.classifier.in_features
+            elif self.backbone_name.startswith('squeeze'):
+                in_features = self.backbone.classifier[1].in_channels
             elif self.backbone_name.startswith('mobilenet'):
-                in_features = self.backbone.last_channel
+                in_features = self.backbone.classifier[1].in_features
             else:
                 in_features = self.backbone.fc.in_features
             self.fc = nn.Linear(in_features, self.num_classes)
         else:
-            self.backbone = pretrainedmodels.__dict__[self.backbone_name](num_classes=1000, pretrained='imagenet')
+            pretrained = 'imagenet'
+            if self.backbone_name in ['dpn68b', 'dpn92', 'dpn107']:
+                pretrained = 'imagenet+5k'
+            self.backbone = pretrainedmodels.__dict__[self.backbone_name](num_classes=1000, pretrained=pretrained)
             
             if isinstance(self.backbone.last_linear, nn.Conv2d):
                 in_features = self.backbone.last_linear.in_channels
@@ -522,18 +530,18 @@ hyper_params = nni.get_next_parameter()
 
 args = Namespace()
 args.backbone = hyper_params['backbone']
-args.ckp_name = 'model2_fold0.pth'
+args.ckp_name = 'model3_fold0.pth'
 args.predict = False
 args.optim = 'RAdam'
 args.lr = 1e-3
 args.lrs = 'plateau'
 args.t_max = 15
-args.factor = 0.1
+args.factor = 0.2
 args.patience = 0
 args.min_lr = 1e-5
 args.iter_val = 100
-args.num_epochs = 5
-args.batch_size = 512
+args.num_epochs = 20
+args.batch_size = 1024
 args.val_batch_size = 1024
 
 args.beta = 1.0
