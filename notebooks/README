@@ -1,0 +1,23 @@
+Reference model3-seresnext50-5fold-4-mixup-cutmix.ipynb for stage 1 and stage 2
+
+Stage 1:  original size 20 epochs
+
+lr scheduler: Reduce on plateau
+optimizer: Adam
+init LR: 2e-3
+aug: mixup + cutmix
+
+Stage 2: original size,  to cv 0.990,  400 - 800 epochs
+
+lr scheduler: cosine
+optimizer: Adam
+init lr: 1e-4
+min lr: 1e-6
+aug: mixup + cutmix
+
+
+Stage 3: resize to 224x224, to cv0.995
+Refrence model3-seresnext50-5fold-4-mixup-cutmix-cv9901-continue-224.ipynb
+
+Stage 4: grid mask, to cv0.997
+Reference model3-seresnext50-5fold-4-mixup-cutmix-224-gridmask.ipynb
