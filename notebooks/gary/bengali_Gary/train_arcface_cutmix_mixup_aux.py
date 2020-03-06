@@ -145,10 +145,15 @@ def rand_bbox(size, lam):
     return bbx1, bby1, bbx2, bby2
 
 def run_train(config):
-    base_lr = 3e-4
+    base_lr = config.base_lr
     
     def adjust_lr_and_hard_ratio(optimizer, ep):
-        lr = 3e-4
+        if ep < 50:
+            lr = 4e-4
+        elif ep < 100:
+            lr = 1e-4
+        else:
+            lr = 1e-5
         for p in optimizer.param_groups:
             p['lr'] = lr
         return lr
@@ -162,7 +167,7 @@ def run_train(config):
     grapheme_words_dict = {grapheme: i for i, grapheme in enumerate(grapheme_words)}
     meta_df['word_label'] = meta_df['grapheme'].map(lambda x: grapheme_words_dict[x])
 
-    img_path = config.img_path
+    #img_path = config.img_path
     fold = config.fold
     ## setup  -----------------------------------------------------------------------------
     out_dir = os.path.join('./ckpt/', config.model)
@@ -178,7 +183,12 @@ def run_train(config):
     else:
         initial_checkpoint = None
 
-    train_dataset = GraphemeDataset_aux(meta_df, 'train', img_path, image_size=image_size, fold=fold)
+    print('loading parquets...')
+    img_dfs = [pd.read_parquet(f'{config.data_dir}/train_image_data_{i}.parquet') for i in range(4)]
+    img_df = pd.concat(img_dfs, axis=0).set_index('image_id')
+    print('done,',  img_df.shape)
+
+    train_dataset = GraphemeDataset_aux(meta_df, 'train', img_df, image_size=image_size, fold=fold)
 
     train_loader  = DataLoader(train_dataset,
                                 shuffle = True,
@@ -187,7 +197,7 @@ def run_train(config):
                                 num_workers = config.num_workers,
                                 pin_memory  = True)
 
-    valid_dataset = GraphemeDataset_aux(meta_df, 'val', img_path, image_size=image_size, fold=fold)
+    valid_dataset = GraphemeDataset_aux(meta_df, 'val', img_df, image_size=image_size, fold=fold)
 
     valid_loader  = DataLoader(valid_dataset,
                                 shuffle = False,
@@ -344,7 +354,7 @@ def run_train(config):
             optimizer.zero_grad()
 
 
-            if i % 1000 == 0:
+            if i % 100 == 0:
                 print(config.model_name + ' %0.7f %5.1f %6.1f | %0.3f  %0.3f  %0.3f  %0.3f  | %s' % (\
                              rate, iter, epoch,
                              loss_all, loss1[0], loss1[1], loss1[2],
@@ -387,27 +397,27 @@ def main(config):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--fold', type=int, default = 0)
+    parser.add_argument('--fold', type=int, default=3)
     parser.add_argument('--meta_df', type=str, default='./train_with_fold.csv')
-    parser.add_argument('--img_path', type=str, default='/mnt/chicm/data/bengali/train_images_npy/')
+    parser.add_argument('--data_dir', type=str, default='/home/chec/data/bengali')
     parser.add_argument('--model', type=str, default='E5_aux_arc')
     parser.add_argument('--model_name', type=str, default='Enet_timm_aux_arc')
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=440)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--image_h', type=int, default=137)#137 236
     parser.add_argument('--image_w', type=int, default=236)
     parser.add_argument('--beta', type=int, default=1)
 
     parser.add_argument('--mode', type=str, default='train', choices=['train','test_classifier'])
-    parser.add_argument('--pretrained_model', type=str, default=None) #'max_score_model.pth'
+    parser.add_argument('--pretrained_model', type=str, default='max_score_model.pth')
 
     parser.add_argument('--epoch_save_interval', type=int, default=10)
     parser.add_argument('--train_epoch', type=int, default=300)
     parser.add_argument('--apex_flag', type=bool, default=True)
-    parser.add_argument('--base_lr', type=float, default=3e-4)
+    parser.add_argument('--base_lr', type=float, default=4e-4)
     parser.add_argument('--final_lr', type=float, default=1e-6)
     parser.add_argument('--schedule', type=str, default='normal', choices=['normal','cosine'])
 
     config = parser.parse_args()
-    #print(config)
+    print(config)
     main(config)

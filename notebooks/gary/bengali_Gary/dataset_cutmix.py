@@ -195,13 +195,14 @@ class GraphemeDataset(Dataset):
 
 
 class GraphemeDataset_aux(Dataset):
-    def __init__(self, df, mode, img_path, image_size=(137,236), fold=0):
+    def __init__(self, df, mode, img_df, image_size=(137,236), fold=3):
         super().__init__()
         self.df = df
+        self.img_df = img_df
         self.image_size = image_size
         self.mode = mode
         self.fold = fold
-        self.img_path = img_path
+        #self.img_path = img_path
         self.set_mode(mode)
 
         
@@ -228,13 +229,17 @@ class GraphemeDataset_aux(Dataset):
 
     def __len__(self):
         return self.num_data
+    
+    def get_img(self, img_id):
+        return 255 - self.img_df.loc[img_id].values.reshape(137, 236).astype(np.uint8)
 
     def __getitem__(self,idx: int):
         if self.mode == 'train':
             #sequence: root, vowel, consonant
             img_id, lb1, lb2, lb3, lb4 = self.train_df[idx, :]
-            image = np.load(os.path.join(self.img_path, img_id + '.npy'))
-            image = 255-image
+            #image = np.load(os.path.join(self.img_path, img_id + '.npy'))
+            #image = 255-image
+            image = self.get_img(img_id)
 
             if self.image_size[1] != 236 and self.image_size[0]!= 137:
                 image = cv2.resize(image, (self.image_size[1], self.image_size[0]))
@@ -246,8 +251,9 @@ class GraphemeDataset_aux(Dataset):
         elif self.mode == 'val':
             #sequence: root, vowel, consonant
             img_id, lb1, lb2, lb3, lb4 = self.val_df[idx, :]
-            image = np.load(os.path.join(self.img_path, img_id + '.npy'))
-            image = 255-image
+            #image = np.load(os.path.join(self.img_path, img_id + '.npy'))
+            #image = 255-image
+            image = self.get_img(img_id)
 
             if self.image_size[1] != 236 and self.image_size[0]!= 137:
                 image = cv2.resize(image, (self.image_size[1], self.image_size[0]))

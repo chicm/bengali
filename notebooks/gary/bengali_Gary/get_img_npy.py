@@ -9,7 +9,7 @@ import pickle
 
 HEIGHT = 137
 WIDTH = 236
-DATA_DIR = '/mnt/chicm/data/bengali'
+DATA_DIR = '/home/chec/data/bengali'
 
 def get_train():
     class GraphemeDataset(Dataset):
