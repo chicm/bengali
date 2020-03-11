@@ -10,10 +10,29 @@ from dataset_cutmix import *
 from efficientnet_pytorch import EfficientNet
 from sklearn.metrics import recall_score
 from timeit import default_timer as timer
-from efficientnet import *
+#from model_se50 import *
+# from model_resnet50 import *
+from efficientnet_finetune import *
+#from model_se50_arc import *
 from gridmask import GridMask
 from apex import amp
 import apex
+from torch.utils.data.sampler import WeightedRandomSampler
+
+'''
+0.9981006978491425 0.9978558583822444 0.9978591769698345 0.998831897662246
+'''
+def class_balanced_sampler(labels):
+    class_counts = np.bincount(labels)
+    total_samples = len(labels)
+    sample_weights = np.zeros_like(labels).astype(np.float32)
+    for idx, label in enumerate(labels):
+        sample_weights[idx] = total_samples / class_counts[label]
+    # return sample_weights
+    sampler = WeightedRandomSampler(weights=sample_weights,
+        num_samples=total_samples)
+    return sampler
+
 
 grid = GridMask(64, 128, rotate=15, ratio=0.6, mode=1, prob=1.)
 
@@ -33,12 +52,31 @@ def time_to_str(t, mode='min'):
     else:
         raise NotImplementedError
 
+def get_model(config):
+    if 'efficientB5' == config.model_name:
+        net = Enet(num_layers=5, pretrained=True, dropout=False)
+    elif 'efficientB5_timm' == config.model_name:
+        net = Enet_timm(num_layers=5, pretrained=True,)
+    elif 'Enet_timm_aux_arc' == config.model_name:
+        net = Enet_timm_aux_arc(num_layers=5, pretrained=True)
+    elif 'se50' == config.model_name:
+        net = SE50()
+    elif 'SE50_aux' == config.model_name:
+        net = SE50_aux()
+    elif 'se50_split' == config.model_name:
+        net = SE50_split()
+    elif 'se50_arc' == config.model_name:
+        net = SE50_arc()
+    else:
+        net = Resnet50()
+    return net
+
 def do_valid(net, valid_loader, loss_function):
     valid_num  = 0
     losses   = []
     probs = [[],[], []]
     labels = [[],[], []]
-    net.eval()
+    net.module.set_mode('valid', is_freeze_bn=True)
     
     with torch.no_grad():
         for input, lb1, lb2, lb3, lb4 in valid_loader:
@@ -145,15 +183,24 @@ def rand_bbox(size, lam):
     return bbx1, bby1, bbx2, bby2
 
 def run_train(config):
-    base_lr = config.base_lr
+    base_lr = 3e-4
     
     def adjust_lr_and_hard_ratio(optimizer, ep):
-        if ep < 50:
+        if ep == 0:
             lr = 1e-5
-        #elif ep < 130:
-        #    lr = 1e-4
+        elif ep == 1:
+            lr = 2e-5
+        elif ep == 3:
+            lr = 1e-4
+        elif ep == 4:
+            lr = 2e-4
+        elif ep <= 10:
+            lr = 3e-4
         else:
-            lr = 1e-5
+            lr = 1e-4
+        # elif ep < 50:
+        #     lr = 1e-5
+        #lr = 3e-4
         for p in optimizer.param_groups:
             p['lr'] = lr
         return lr
@@ -187,16 +234,34 @@ def run_train(config):
     img_dfs = [pd.read_parquet(f'{config.data_dir}/train_image_data_{i}.parquet') for i in range(4)]
     img_df = pd.concat(img_dfs, axis=0).set_index('image_id')
     print('done,',  img_df.shape)
-
     train_dataset = GraphemeDataset_aux(meta_df, 'train', img_df, image_size=image_size, fold=fold)
 
-    train_loader  = DataLoader(train_dataset,
-                                shuffle = True,
-                                batch_size  = batch_size,
-                                drop_last   = True,
-                                num_workers = config.num_workers,
-                                pin_memory  = True)
+    #train_dataset = GraphemeDataset_aux(meta_df, 'train', img_path, image_size=image_size, fold=fold)
 
+    if config.weighted_sampler:
+        #weighted sampler
+        train_df_fold = meta_df[meta_df['fold'] != config.fold]
+        labels_fold = train_df_fold[config.balance_class]
+        sampler = class_balanced_sampler(labels_fold)
+        print('sampler length: {}'.format(sampler.weights.shape))
+        del train_df_fold, labels_fold
+        #weighted sampler
+        train_loader  = DataLoader(train_dataset,
+                                    shuffle = False,
+                                    batch_size  = batch_size,
+                                    drop_last   = False,
+                                    num_workers = config.num_workers,
+                                    pin_memory  = True,
+                                    sampler = sampler)
+    else:
+        train_loader  = DataLoader(train_dataset,
+                                    shuffle = True,
+                                    batch_size  = batch_size,
+                                    drop_last   = True,
+                                    num_workers = config.num_workers,
+                                    pin_memory  = True)
+
+    #valid_dataset = GraphemeDataset_aux(meta_df, 'val', img_path, image_size=image_size, fold=fold)
     valid_dataset = GraphemeDataset_aux(meta_df, 'val', img_df, image_size=image_size, fold=fold)
 
     valid_loader  = DataLoader(valid_dataset,
@@ -206,9 +271,23 @@ def run_train(config):
                                 num_workers = config.num_workers,
                                 pin_memory  = True)
 
-    net = Enet_timm_aux_arc(num_layers=5, pretrained=True)
-    net = apex.parallel.convert_syncbn_model(net)
+    net = get_model(config)
+    # net = apex.parallel.convert_syncbn_model(net)
     net = net.cuda()
+
+    if config.weighted_sampler:
+        for param in net.parameters():
+            param.requires_grad = False
+        if config.balance_class == 'grapheme_root':
+            for param in net.fc1.parameters():
+                param.requires_grad = True
+        elif config.balance_class == 'vowel_diacritic':
+            for param in net.fc2.parameters():
+                param.requires_grad = True
+        else:
+            for param in net.fc3.parameters():
+                param.requires_grad = True
+
 
     if config.schedule == 'cosine':
         optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), \
@@ -217,6 +296,8 @@ def run_train(config):
     else:
         optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), \
             lr=base_lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=2e-4)
+        # optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, net.fc1.parameters()), \
+        #     lr=base_lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=2e-4)
 
     if config.apex_flag:
         print('training with apex')
@@ -256,28 +337,32 @@ def run_train(config):
     i = 0
     start = timer()
     min_loss, max_score, score1, score2, score3 = do_valid(net, valid_loader, loss_function)
-    print('start from: loss {} score {}'.format(min_loss, max_score))
+    print('start from: loss {} score {}, {}, {}, {}'.format(min_loss, max_score, score1, score2, score3))
+    #max_score = 0.
     max_score_print = max_score
     # max_score = 0
     # max_score_print = 0
+    # if max_score > 0.995:
+    #     max_score = 0.993
     iter_per_epoch = train_dataset.num_data / batch_size
     print('iter_per_epoch {}'.format(iter_per_epoch))
-    net.train()
-    for epoch in range(config.start_epoch, config.train_epoch):
+    net.module.set_mode('train', is_freeze_bn=True)
+    for epoch in range(config.train_epoch):
         optimizer.zero_grad()
         train_all_loss = 0
         if config.schedule == 'cosine': 
             rate = optimizer.state_dict()['param_groups'][0]['lr']
         else:
             rate = adjust_lr_and_hard_ratio(optimizer, epoch + 1)
+        # print('change lr: {}'.format(rate))
         
         for input, lb1, lb2, lb3, lb4 in train_loader:
             iter = i + start_iter
             # one iteration update  -------------
-            net.train()
+            net.module.set_mode('train', is_freeze_bn=True)
             input, lb1, lb2, lb3, lb4 = input.cuda(), lb1.cuda(), lb2.cuda(), lb3.cuda(), lb4.cuda()
             rand_value = np.random.rand()
-            if rand_value<0.4:
+            if rand_value<0.6:
                 #cutmix part#
                 lam = np.random.beta(config.beta, config.beta)
                 rand_index = np.random.permutation(input.size()[0])
@@ -290,21 +375,21 @@ def run_train(config):
                 output1, output2, output3, output4, output5, output6 = net.forward(input, [lb1, lb2, lb3, lb4])
                 loss1 = criterion(output1, target_a, lam) + \
                 criterion(output1, target_b, (1. - lam))
-                loss2 = criterion(output2, target_a, lam) + \
-                criterion(output1, target_b, (1. - lam))
-                loss3 = criterion(output3, target_a, lam) + \
-                criterion(output1, target_b, (1. - lam))
+                # loss2 = criterion(output2, target_a, lam) + \
+                # criterion(output1, target_b, (1. - lam))
+                # loss3 = criterion(output3, target_a, lam) + \
+                # criterion(output1, target_b, (1. - lam))
                 
                 ## arcface
-                loss4 = criterion(output4, target_a, lam) + \
-                criterion(output4, target_b, (1. - lam))
-                loss5 = criterion(output5, target_a, lam) + \
-                criterion(output5, target_b, (1. - lam))
-                loss6 = criterion(output6, target_a, lam) + \
-                criterion(output6, target_b, (1. - lam))
+                # loss4 = criterion(output4, target_a, lam) + \
+                # criterion(output4, target_b, (1. - lam))
+                # loss5 = criterion(output5, target_a, lam) + \
+                # criterion(output5, target_b, (1. - lam))
+                # loss6 = criterion(output6, target_a, lam) + \
+                # criterion(output6, target_b, (1. - lam))
 
                 #cutmix part#
-            elif rand_value<0.7:
+            elif rand_value<1.0:
                 #gridmask part#
                 onehot = [to_onehot(t,c) for t,c in zip([lb1, lb2, lb3, lb4],[168, 11, 7, 1295])]
                 with torch.no_grad():
@@ -312,12 +397,12 @@ def run_train(config):
                 output1, output2, output3, output4, output5, output6 = net.forward(input, [lb1, lb2, lb3, lb4])
 
                 loss1 = criterion(output1, onehot, 1)
-                loss2 = criterion(output2, onehot, 1)
-                loss3 = criterion(output3, onehot, 1)
+                # loss2 = criterion(output2, onehot, 1)
+                # loss3 = criterion(output3, onehot, 1)
 
-                loss4 = criterion(output4, onehot, 1)
-                loss5 = criterion(output5, onehot, 1)
-                loss6 = criterion(output6, onehot, 1)
+                # loss4 = criterion(output4, onehot, 1)
+                # loss5 = criterion(output5, onehot, 1)
+                # loss6 = criterion(output6, onehot, 1)
                 #gridmask part#
             else:
                 #mix up part#
@@ -326,21 +411,30 @@ def run_train(config):
                     input, onehot = do_mixup(input, onehot)
                 output1, output2, output3, output4, output5, output6 = net.forward(input, [lb1, lb2, lb3, lb4])
                 loss1 = criterion(output1, onehot, 1)
-                loss2 = criterion(output2, onehot, 1)
-                loss3 = criterion(output3, onehot, 1)
+                # loss2 = criterion(output2, onehot, 1)
+                # loss3 = criterion(output3, onehot, 1)
 
-                loss4 = criterion(output4, onehot, 1)
-                loss5 = criterion(output5, onehot, 1)
-                loss6 = criterion(output6, onehot, 1)
+                # loss4 = criterion(output4, onehot, 1)
+                # loss5 = criterion(output5, onehot, 1)
+                # loss6 = criterion(output6, onehot, 1)
                 #mix up part#
                 
-            loss_all1 = 2*loss1[0]+loss1[1]+loss1[2]
-            loss_all2 = 2*loss2[0]+loss2[1]+loss2[2]
-            loss_all3 = 2*loss3[0]+loss3[1]+loss3[2]
-            loss_all4 = 2*loss4[0]+loss4[1]+loss4[2]
-            loss_all5 = 2*loss5[0]+loss5[1]+loss5[2]
-            loss_all6 = 2*loss6[0]+loss6[1]+loss6[2]
-            loss_all = 0.7*(loss_all1 + 0.8*loss_all2 + 0.8*loss_all3) + 0.3*(loss_all4 + 0.8*loss_all5 + 0.8*loss_all6)
+            # loss_all1 = 2*loss1[0]+loss1[1]+loss1[2]
+            # loss_all2 = 2*loss2[0]+loss2[1]+loss2[2]
+            # loss_all3 = 2*loss3[0]+loss3[1]+loss3[2]
+            # loss_all4 = 2*loss4[0]+loss4[1]+loss4[2]
+            # loss_all5 = 2*loss5[0]+loss5[1]+loss5[2]
+            # loss_all6 = 2*loss6[0]+loss6[1]+loss6[2]
+            # loss_all = 0.7*(loss_all1 + 0.8*loss_all2 + 0.8*loss_all3) + 0.3*(loss_all4 + 0.8*loss_all5 + 0.8*loss_all6)
+            
+            if config.balance_class == 'grapheme_root':
+                loss_all = loss1[0]
+            elif config.balance_class == 'vowel_diacritic':
+                loss_all = loss1[1]
+            else:
+                loss_all = loss1[2]
+            
+            #loss_all = 2*loss1[1]
 
             train_all_loss += loss_all
 
@@ -357,17 +451,34 @@ def run_train(config):
             if i % 100 == 0:
                 print(config.model_name + ' %0.7f %5.1f %6.1f | %0.3f  %0.3f  %0.3f  %0.3f  | %s' % (\
                              rate, iter, epoch,
-                             loss_all, loss1[0], loss1[1], loss1[2],
+                             loss_all, loss_all, loss_all, loss_all,
                              time_to_str((timer() - start),'min')))
+
             i += 1
             
+            # if i % 200 == 0:
+            #     net.eval()
+            #     val_loss_all, score_all, score1, score2, score3 = do_valid(net, valid_loader, loss_function)
+            #     if max_score_print < score_all:
+            #         max_score_print = score_all
+            #     print('epoch: ', epoch, 'loss: ', val_loss_all, \
+            #         'score: ', score_all, score1, score2, score3, 'max_score: ', max_score_print)
+
+            #     if max_score < score_all:
+            #         max_score = score_all
+            #         print('save max_score!!!!!! : ' + str(max_score))
+            #         log.write('save max_score!!!!!! : ' + str(max_score))
+            #         log.write('\n')
+            #         log.flush()
+            #         torch.save(net.state_dict(), out_dir + '/max_score_model.pth')
+            #     net.train()
         train_all_loss /= iter_per_epoch
         
         print('avg training loss: ', train_all_loss)
         log.write('Epoch: %1.0f LR: %0.6f avg training loss: %0.3f' % (epoch, rate, train_all_loss))
         log.write('\n')
         
-        net.eval()
+        net.module.set_mode('valid', is_freeze_bn=True)
         val_loss_all, score_all, score1, score2, score3 = do_valid(net, valid_loader, loss_function)
         if max_score_print < score_all:
             max_score_print = score_all
@@ -381,7 +492,15 @@ def run_train(config):
         
         if config.schedule == 'cosine':
             lr_scheduler.step()
-        net.train()
+        net.module.set_mode('train', is_freeze_bn=True)
+
+        # if min_loss > val_loss_all:
+        #     min_loss = val_loss_all
+        #     print('save min loss!!!!!! : ' + str(min_loss))
+        #     log.write('save min loss!!!!!! : ' + str(min_loss))
+        #     log.write('\n')
+        #     log.flush()
+        #     torch.save(net.state_dict(), out_dir + '/checkpoint/min_loss_model.pth')
             
         if max_score < score_all:
             max_score = score_all
@@ -389,7 +508,7 @@ def run_train(config):
             log.write('save max_score!!!!!! : ' + str(max_score))
             log.write('\n')
             log.flush()
-            torch.save(net.state_dict(), out_dir + '/max_score_model.pth')
+            torch.save(net.state_dict(), out_dir + '/max_score_model_finetune.pth')
 
 def main(config):
     if config.mode == 'train':
@@ -399,26 +518,30 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--fold', type=int, default=3)
     parser.add_argument('--meta_df', type=str, default='./train_with_fold.csv')
+    #parser.add_argument('--img_path', type=str, default='../input/train_images_npy/')
     parser.add_argument('--data_dir', type=str, default='/home/chec/data/bengali')
     parser.add_argument('--model', type=str, default='E5_aux_arc')
     parser.add_argument('--model_name', type=str, default='Enet_timm_aux_arc')
-    parser.add_argument('--batch_size', type=int, default=256) #440)
+    parser.add_argument('--batch_size', type=int, default=1536)
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--image_h', type=int, default=224) #137)#137 236
-    parser.add_argument('--image_w', type=int, default=224) #236)
-    parser.add_argument('--start_epoch', type=int, default=0)
+    parser.add_argument('--image_h', type=int, default=224)#137 236
+    parser.add_argument('--image_w', type=int, default=224)
     parser.add_argument('--beta', type=int, default=1)
 
     parser.add_argument('--mode', type=str, default='train', choices=['train','test_classifier'])
-    parser.add_argument('--pretrained_model', type=str, default='max_score_model.pth')
+    parser.add_argument('--pretrained_model', type=str, default='max_score_model_finetune.pth') #'max_score_model.pth'
 
     parser.add_argument('--epoch_save_interval', type=int, default=10)
     parser.add_argument('--train_epoch', type=int, default=300)
     parser.add_argument('--apex_flag', type=bool, default=True)
-    parser.add_argument('--base_lr', type=float, default=4e-4)
+    parser.add_argument('--weighted_sampler', type=bool, default=True)
+    parser.add_argument('--balance_class', type=str, default='grapheme_root', \
+        choices=['grapheme_root', 'vowel_diacritic', 'consonant_diacritic'])
+    parser.add_argument('--base_lr', type=float, default=3e-4)
     parser.add_argument('--final_lr', type=float, default=1e-6)
     parser.add_argument('--schedule', type=str, default='normal', choices=['normal','cosine'])
 
     config = parser.parse_args()
-    print(config)
+    print('fold_{}'.format(config.fold))
+    #print(config)
     main(config)

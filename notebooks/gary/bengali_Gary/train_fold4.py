@@ -148,9 +148,9 @@ def run_train(config):
     base_lr = config.base_lr
     
     def adjust_lr_and_hard_ratio(optimizer, ep):
-        if ep < 50:
-            lr = 1e-5
-        #elif ep < 130:
+        if ep < 45:
+            lr = 1e-4
+        #elif ep < 50:
         #    lr = 1e-4
         else:
             lr = 1e-5
@@ -170,7 +170,7 @@ def run_train(config):
     #img_path = config.img_path
     fold = config.fold
     ## setup  -----------------------------------------------------------------------------
-    out_dir = os.path.join('./ckpt/', config.model)
+    out_dir = os.path.join('./ckpt-fold4/', config.model)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
     if not os.path.exists(os.path.join(out_dir,'checkpoint')):
@@ -277,7 +277,7 @@ def run_train(config):
             net.train()
             input, lb1, lb2, lb3, lb4 = input.cuda(), lb1.cuda(), lb2.cuda(), lb3.cuda(), lb4.cuda()
             rand_value = np.random.rand()
-            if rand_value<0.4:
+            if rand_value<0.5:
                 #cutmix part#
                 lam = np.random.beta(config.beta, config.beta)
                 rand_index = np.random.permutation(input.size()[0])
@@ -304,7 +304,7 @@ def run_train(config):
                 criterion(output6, target_b, (1. - lam))
 
                 #cutmix part#
-            elif rand_value<0.7:
+            elif rand_value<1.0:
                 #gridmask part#
                 onehot = [to_onehot(t,c) for t,c in zip([lb1, lb2, lb3, lb4],[168, 11, 7, 1295])]
                 with torch.no_grad():
@@ -397,15 +397,15 @@ def main(config):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--fold', type=int, default=3)
+    parser.add_argument('--fold', type=int, default=4)
     parser.add_argument('--meta_df', type=str, default='./train_with_fold.csv')
     parser.add_argument('--data_dir', type=str, default='/home/chec/data/bengali')
     parser.add_argument('--model', type=str, default='E5_aux_arc')
     parser.add_argument('--model_name', type=str, default='Enet_timm_aux_arc')
     parser.add_argument('--batch_size', type=int, default=256) #440)
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--image_h', type=int, default=224) #137)#137 236
-    parser.add_argument('--image_w', type=int, default=224) #236)
+    parser.add_argument('--image_h', type=int, default=224)#137 236
+    parser.add_argument('--image_w', type=int, default=224)
     parser.add_argument('--start_epoch', type=int, default=0)
     parser.add_argument('--beta', type=int, default=1)
 
